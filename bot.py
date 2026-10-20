@@ -219,6 +219,22 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 @client.event
 async def on_ready():
     log.info("Logged in as %s (%s)", client.user, client.user.id)
+    # The application ID is populated only after the client has logged in.
+    # Syncing commands before client.start() raises discord.errors.MissingApplicationID.
+    if getattr(client, "_orb_commands_synced", False):
+        return
+    try:
+        if GUILDS:
+            for guild_id in GUILDS:
+                guild = discord.Object(id=guild_id)
+                tree.copy_global_to(guild=guild)
+                await tree.sync(guild=guild)
+        else:
+            await tree.sync()
+        client._orb_commands_synced = True
+        log.info("Slash commands synced.")
+    except Exception:
+        log.exception("Failed to sync slash commands.")
 
 
 async def main():
@@ -229,13 +245,6 @@ async def main():
     seen_ids = set(load_json(SEEN_PATH, []))
     http_session = aiohttp.ClientSession()
     async with client:
-        if GUILDS:
-            for guild_id in GUILDS:
-                guild = discord.Object(id=guild_id)
-                tree.copy_global_to(guild=guild)
-                await tree.sync(guild=guild)
-        else:
-            await tree.sync()
         task = asyncio.create_task(poll_loop())
         try:
             await client.start(os.environ["DISCORD_TOKEN"])
