@@ -89,39 +89,20 @@ def is_us_only(q: dict) -> bool:
 
 
 def quest_link(q: dict) -> str:
-    # The API exposes the campaign's CTA as the destination used by its
-    # Learn More / Play Now button. Prefer it over generic game links.
-    for path in (
-        ("config", "cta_config", "link"),
-        ("cta_config", "link"),
-        ("config", "task_config", "enrollment_url"),
-        ("task_config", "enrollment_url"),
-        ("config", "application", "link"),
-        ("application", "link"),
-    ):
-        value: Any = q
-        for key in path:
-            value = value.get(key) if isinstance(value, dict) else None
-        if isinstance(value, str) and value.startswith("https://"):
-            return value
-    direct = first_field(q, ("quest_url", "questUrl", "url", "link"))
-    return direct if direct.startswith("https://") else "https://discord.com/quest-home"
+    # Raw Discord Quest share links trigger Discord's native Quest preview.
+    qid = quest_id(q)
+    return f"https://discord.com/quests/{qid}" if qid else "https://discord.com/quest-home"
 
 
 def quest_message(q: dict) -> str:
     title = first_field(q, ("title", "name"), "New Orb Quest")
     reward = first_field(q, ("reward", "rewards", "reward_amount", "rewardAmount"), "Orbs")
     end = first_field(q, ("end_at", "endAt", "ends_at", "expires_at", "expiration"))
-    label = first_field(q, ("button_label",))
-    conf = q.get("config", {}) if isinstance(q.get("config"), dict) else q
-    cta = conf.get("cta_config", {}) if isinstance(conf, dict) else {}
-    if isinstance(cta, dict):
-        label = cta.get("button_label") or label
-    label = label if isinstance(label, str) and label else "查看任务 / 开始任务"
     lines = [f"**{title[:250]}**", f"奖励：{reward[:500]}"]
     if end:
         lines.append(f"截止：{end[:100]}")
-    lines.extend(("任务详情与地区可用性可能因账号而异。", f"[{label[:80]}]({quest_link(q)})"))
+    # Keep the Quest URL unformatted so Discord can unfurl its official card.
+    lines.extend(("任务详情与地区可用性可能因账号而异。", quest_link(q)))
     return "\n".join(lines)
 
 
