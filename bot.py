@@ -89,21 +89,40 @@ def is_us_only(q: dict) -> bool:
 
 
 def quest_link(q: dict) -> str:
-    direct = first_field(q, ("url", "link", "quest_url", "questUrl"))
+    # The API exposes the campaign's CTA as the destination used by its
+    # Learn More / Play Now button. Prefer it over generic game links.
+    for path in (
+        ("config", "cta_config", "link"),
+        ("cta_config", "link"),
+        ("config", "task_config", "enrollment_url"),
+        ("task_config", "enrollment_url"),
+        ("config", "application", "link"),
+        ("application", "link"),
+    ):
+        value: Any = q
+        for key in path:
+            value = value.get(key) if isinstance(value, dict) else None
+        if isinstance(value, str) and value.startswith("https://"):
+            return value
+    direct = first_field(q, ("quest_url", "questUrl", "url", "link"))
     return direct if direct.startswith("https://") else "https://discord.com/quest-home"
 
 
-def quest_embed(q: dict) -> discord.Embed:
+def quest_message(q: dict) -> str:
     title = first_field(q, ("title", "name"), "New Orb Quest")
-    desc = first_field(q, ("description", "summary"))
     reward = first_field(q, ("reward", "rewards", "reward_amount", "rewardAmount"), "Orbs")
     end = first_field(q, ("end_at", "endAt", "ends_at", "expires_at", "expiration"))
-    embed = discord.Embed(title=title[:256], url=quest_link(q), description=desc[:4000] or None, color=0x5865F2)
-    embed.add_field(name="Reward", value=reward[:1024], inline=True)
+    label = first_field(q, ("button_label",))
+    conf = q.get("config", {}) if isinstance(q.get("config"), dict) else q
+    cta = conf.get("cta_config", {}) if isinstance(conf, dict) else {}
+    if isinstance(cta, dict):
+        label = cta.get("button_label") or label
+    label = label if isinstance(label, str) and label else "查看任务 / 开始任务"
+    lines = [f"**{title[:250]}**", f"奖励：{reward[:500]}"]
     if end:
-        embed.add_field(name="Ends", value=end[:1024], inline=True)
-    embed.set_footer(text="Quest details and availability can vary by account and region.")
-    return embed
+        lines.append(f"截止：{end[:100]}")
+    lines.extend(("任务详情与地区可用性可能因账号而异。", f"[{label[:80]}]({quest_link(q)})"))
+    return "\n".join(lines)
 
 
 async def fetch_quests() -> list[dict]:
@@ -152,7 +171,7 @@ async def poll_loop():
                         role_id = config.get("roles", {}).get(str(guild_id))
                         content = f"<@&{role_id}>" if role_id else None
                         try:
-                            await channel.send(content=content, embed=quest_embed(q), allowed_mentions=discord.AllowedMentions(roles=True))
+                            await channel.send(content="\n".join(x for x in (content, quest_message(q)) if x), allowed_mentions=discord.AllowedMentions(roles=True))
                         except discord.HTTPException:
                             log.exception("Failed to post quest %s to channel %s", qid, channel_id)
                 save_json(SEEN_PATH, sorted(seen_ids))
