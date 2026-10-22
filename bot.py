@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ POLL_SECONDS = max(60, int(os.getenv("POLL_SECONDS", "300")))
 CONFIG_PATH = Path(os.getenv("CONFIG_PATH", "data/config.json"))
 SEEN_PATH = Path(os.getenv("SEEN_PATH", "data/seen.json"))
 GUILDS = [int(x) for x in os.getenv("DISCORD_GUILD_IDS", "").split(",") if x.strip().isdigit()]
+REANNOUNCE_QUEST_IDS = {x.strip() for x in os.getenv("REANNOUNCE_QUEST_IDS", "").split(",") if x.strip()}
 
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
@@ -75,6 +77,21 @@ def is_orb_quest(q: dict) -> bool:
     return False
 
 
+def is_active(q: dict) -> bool:
+    now = datetime.now(timezone.utc)
+    start = first_field(q, ("starts_at", "startsAt", "start_at", "startAt", "start_date", "startDate"))
+    end = first_field(q, ("expires_at", "expiresAt", "end_at", "endAt", "ends_at", "endsAt", "expiration"))
+    try:
+        if start and datetime.fromisoformat(start.replace("Z", "+00:00")) > now:
+            return False
+        if end and datetime.fromisoformat(end.replace("Z", "+00:00")) <= now:
+            return False
+    except ValueError:
+        # Unknown date formats should not prevent otherwise valid quests from being announced.
+        pass
+    return True
+
+
 def is_us_only(q: dict) -> bool:
     # Only classify as US-only when the data explicitly marks a US-only availability.
     for key, value in values(q):
@@ -123,39 +140,40 @@ async def poll_loop():
     global seen_ids
     while not client.is_closed():
         try:
-            quests = [q for q in await fetch_quests() if is_orb_quest(q) and quest_id(q)]
+            quests = [q for q in await fetch_quests() if is_orb_quest(q) and quest_id(q) and is_active(q)]
             current = {quest_id(q) for q in quests}
             if not seen_ids:
                 # First run establishes a baseline so old campaigns are not announced as new.
-                seen_ids = current
+                seen_ids = current - REANNOUNCE_QUEST_IDS
                 save_json(SEEN_PATH, sorted(seen_ids))
-                log.info("Baseline loaded with %d active Orb Quest(s).", len(seen_ids))
-            else:
-                for q in quests:
-                    qid = quest_id(q)
-                    if qid in seen_ids:
-                        continue
+                log.info("Baseline loaded with %d active Orb Quest(s).", len(current))
+            for q in quests:
+                qid = quest_id(q)
+                if qid in seen_ids:
+                    continue
+                if is_us_only(q):
+                    # Discord cannot send messages into this ChatGPT conversation. Railway logs
+                    # are the available in-chat equivalent until an owner DM is configured.
+                    log.info("US Orb Quest found (kept out of Discord channel): %s | %s", first_field(q, ("title", "name"), qid), quest_link(q))
                     seen_ids.add(qid)
-                    if is_us_only(q):
-                        # Discord cannot send messages into this ChatGPT conversation. Railway logs
-                        # are the available in-chat equivalent until an owner DM is configured.
-                        log.info("US Orb Quest found (kept out of Discord channel): %s | %s", first_field(q, ("title", "name"), qid), quest_link(q))
-                        continue
-                    for guild_id, channel_id in config.get("channels", {}).items():
-                        channel = client.get_channel(int(channel_id))
-                        if channel is None:
-                            try:
-                                channel = await client.fetch_channel(int(channel_id))
-                            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                                log.exception("Cannot access configured channel %s", channel_id)
-                                continue
-                        role_id = config.get("roles", {}).get(str(guild_id))
-                        content = f"<@&{role_id}>" if role_id else None
+                    continue
+                for guild_id, channel_id in config.get("channels", {}).items():
+                    channel = client.get_channel(int(channel_id))
+                    if channel is None:
                         try:
-                            await channel.send(content="\n".join(x for x in (content, quest_message(q)) if x), allowed_mentions=discord.AllowedMentions(roles=True))
-                        except discord.HTTPException:
-                            log.exception("Failed to post quest %s to channel %s", qid, channel_id)
-                save_json(SEEN_PATH, sorted(seen_ids))
+                            channel = await client.fetch_channel(int(channel_id))
+                        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                            log.exception("Cannot access configured channel %s", channel_id)
+                            continue
+                    role_id = config.get("roles", {}).get(str(guild_id))
+                    content = f"<@&{role_id}>" if role_id else None
+                    try:
+                        await channel.send(content="\n".join(x for x in (content, quest_message(q)) if x), allowed_mentions=discord.AllowedMentions(roles=True))
+                    except discord.HTTPException:
+                        log.exception("Failed to post quest %s to channel %s", qid, channel_id)
+                        continue
+                seen_ids.add(qid)
+            save_json(SEEN_PATH, sorted(seen_ids))
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -243,6 +261,7 @@ async def main():
 
     config = load_json(CONFIG_PATH, {"channels": {}, "roles": {}, "owner_user_id": None})
     seen_ids = set(load_json(SEEN_PATH, []))
+    seen_ids.difference_update(REANNOUNCE_QUEST_IDS)
     http_session = aiohttp.ClientSession()
     async with client:
         task = asyncio.create_task(poll_loop())
