@@ -157,7 +157,12 @@ async def poll_loop():
                     log.info("US Orb Quest found (kept out of Discord channel): %s | %s", first_field(q, ("title", "name"), qid), quest_link(q))
                     seen_ids.add(qid)
                     continue
-                for guild_id, channel_id in config.get("channels", {}).items():
+                channels = config.get("channels", {})
+                if not channels:
+                    log.warning("No notification channel is configured; quest %s was not marked as seen.", qid)
+                    continue
+                posted = False
+                for guild_id, channel_id in channels.items():
                     channel = client.get_channel(int(channel_id))
                     if channel is None:
                         try:
@@ -169,10 +174,12 @@ async def poll_loop():
                     content = f"<@&{role_id}>" if role_id else None
                     try:
                         await channel.send(content="\n".join(x for x in (content, quest_message(q, qid in REANNOUNCE_QUEST_IDS)) if x), allowed_mentions=discord.AllowedMentions(roles=True))
+                        posted = True
                     except discord.HTTPException:
                         log.exception("Failed to post quest %s to channel %s", qid, channel_id)
                         continue
-                seen_ids.add(qid)
+                if posted:
+                    seen_ids.add(qid)
             save_json(SEEN_PATH, sorted(seen_ids))
         except asyncio.CancelledError:
             raise
