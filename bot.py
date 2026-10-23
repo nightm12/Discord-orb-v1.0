@@ -111,16 +111,16 @@ def quest_link(q: dict) -> str:
     return f"https://discord.com/quests/{qid}" if qid else "https://discord.com/quest-home"
 
 
-def quest_message(q: dict) -> str:
+def quest_message(q: dict, resent: bool = False) -> str:
     title = first_field(q, ("title", "name"), "New Orb Quest")
     reward = first_field(q, ("reward", "rewards", "reward_amount", "rewardAmount"), "Orbs")
     end = first_field(q, ("end_at", "endAt", "ends_at", "expires_at", "expiration"))
-    lines = [f"**{title[:250]}**", f"奖励：{reward[:500]}"]
+    lines = ["**补发通知**" if resent else None, f"**{title[:250]}**", f"奖励：{reward[:500]}"]
     if end:
         lines.append(f"截止：{end[:100]}")
     # Keep the Quest URL unformatted so Discord can unfurl its official card.
     lines.extend(("任务详情与地区可用性可能因账号而异。", quest_link(q)))
-    return "\n".join(lines)
+    return "\n".join(line for line in lines if line)
 
 
 async def fetch_quests() -> list[dict]:
@@ -168,7 +168,7 @@ async def poll_loop():
                     role_id = config.get("roles", {}).get(str(guild_id))
                     content = f"<@&{role_id}>" if role_id else None
                     try:
-                        await channel.send(content="\n".join(x for x in (content, quest_message(q)) if x), allowed_mentions=discord.AllowedMentions(roles=True))
+                        await channel.send(content="\n".join(x for x in (content, quest_message(q, qid in REANNOUNCE_QUEST_IDS)) if x), allowed_mentions=discord.AllowedMentions(roles=True))
                     except discord.HTTPException:
                         log.exception("Failed to post quest %s to channel %s", qid, channel_id)
                         continue
@@ -219,6 +219,32 @@ async def queststatus(interaction: discord.Interaction):
     role_id = config.get("roles", {}).get(str(interaction.guild_id))
     role_text = f"<@&{role_id}>" if role_id else "未启用"
     await interaction.response.send_message(f"通知频道：{channel_text}\n通知角色：{role_text}\n轮询间隔：{POLL_SECONDS} 秒", ephemeral=True)
+
+
+@tree.command(name="reannounce", description="补发指定的 Orb Quest，并标注为补发通知")
+@app_commands.describe(quest_ids="要补发的任务 ID，多个 ID 用逗号分隔")
+@admin_only()
+async def reannounce(interaction: discord.Interaction, quest_ids: str):
+    ids = {value.strip() for value in quest_ids.split(",") if value.strip()}
+    if not ids:
+        await interaction.response.send_message("请提供至少一个任务 ID。", ephemeral=True)
+        return
+    channel_id = config.get("channels", {}).get(str(interaction.guild_id))
+    if not channel_id:
+        await interaction.response.send_message("尚未设置通知频道，请先使用 /setchannel。", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    channel = client.get_channel(int(channel_id))
+    if channel is None:
+        channel = await client.fetch_channel(int(channel_id))
+    quests = [q for q in await fetch_quests() if is_orb_quest(q) and quest_id(q) in ids and is_active(q) and not is_us_only(q)]
+    sent = 0
+    for q in quests:
+        await channel.send(quest_message(q, resent=True), allowed_mentions=discord.AllowedMentions.none())
+        seen_ids.add(quest_id(q))
+        sent += 1
+    save_json(SEEN_PATH, sorted(seen_ids))
+    await interaction.followup.send(f"已补发 {sent} 个当前可用的任务。", ephemeral=True)
 
 
 @tree.error

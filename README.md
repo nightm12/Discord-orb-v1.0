@@ -44,3 +44,4 @@ python bot.py
 - `/setchannel channel:#频道`：管理员设置/更改通知频道
 - `/setnotifyrole role:@角色`：管理员设置通知角色；不选择角色则关闭 @
 - `/queststatus`：查看当前服务器设置
+- `/reannounce quest_ids`：管理员手动补发当前可用任务（多个 ID 用逗号分隔）；消息会标注“补发通知”，且不会 @ 通知角色
